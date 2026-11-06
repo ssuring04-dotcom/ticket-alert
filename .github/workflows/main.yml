@@ -15,7 +15,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 200
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -85,7 +85,7 @@ jobs:
               browser = p.chromium.launch()
               page = browser.new_page(locale="ko-KR")
 
-              for attempt in range(10):
+              for attempt in range(100):
                   if datetime.now(KST) >= END:
                       break
 
@@ -154,7 +154,7 @@ jobs:
 
                       previous = status
 
-                  if attempt < 9:
+                  if attempt < 179:
                       remaining = 60 - (time.monotonic() - started)
                       if remaining > 0:
                           time.sleep(remaining)
