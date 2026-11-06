@@ -1,0 +1,131 @@
+name: 서도호 토요일 취소표 확인
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '2-57/5 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ticket-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 브라우저 설치
+        run: |
+          pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+
+      - name: 예약 확인
+        shell: python
+        run: |
+          import os
+          import json
+          import re
+          import urllib.request
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          from playwright.sync_api import sync_playwright
+
+          URL = (
+              "https://booking.naver.com/booking/12/"
+              "bizes/1715706/items/7955135"
+              "?startDateTime=2026-11-07T00%3A00%3A00%2B09%3A00"
+          )
+          manual = os.environ["MANUAL"] == "true"
+          now = datetime.now(ZoneInfo("Asia/Seoul"))
+          end = datetime(2026, 11, 8, tzinfo=ZoneInfo("Asia/Seoul"))
+
+          def notify(message):
+              token = os.environ["TELEGRAM_BOT_TOKEN"]
+              chat = os.environ["TELEGRAM_CHAT_ID"]
+              if not token or not chat:
+                  raise RuntimeError("텔레그램 Secrets 설정을 확인하세요.")
+              payload = json.dumps({
+                  "chat_id": chat,
+                  "text": message
+              }).encode()
+              request = urllib.request.Request(
+                  f"https://api.telegram.org/bot{token}/sendMessage",
+                  data=payload,
+                  headers={"Content-Type": "application/json"}
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      result = json.load(response)
+                  if not result.get("ok"):
+                      raise RuntimeError("텔레그램 전송 실패")
+              except Exception:
+                  raise RuntimeError("텔레그램 전송 실패: Secrets를 확인하세요.") from None
+
+          if now >= end:
+              print("감시 기간 종료. 워크플로를 비활성화하세요.")
+              raise SystemExit(0)
+
+          try:
+              with sync_playwright() as p:
+                  browser = p.chromium.launch()
+                  page = browser.new_page(locale="ko-KR")
+                  page.goto(URL, wait_until="domcontentloaded",
+                            timeout=60000)
+
+                  calendar = page.get_by_role("table").filter(
+                      has=page.get_by_role(
+                          "button",
+                          name=re.compile(r"^7(?:\s|$)")
+                      )
+                  )
+                  calendar.wait_for(state="visible", timeout=45000)
+
+                  if "2026.11" not in page.locator("body").inner_text():
+                      raise RuntimeError("11월 달력 확인 실패")
+
+                  day = calendar.get_by_role(
+                      "button", name=re.compile(r"^7(?:\s|$)")
+                  )
+                  if day.count() != 1:
+                      raise RuntimeError("7일 버튼 확인 실패")
+
+                  label = day.inner_text().strip()
+                  if re.search(r"매진|마감|sold\s*out", label, re.I):
+                      status = "매진"
+                  elif not day.is_enabled():
+                      raise RuntimeError("7일 버튼 비활성: 상태 판별 불가")
+                  else:
+                      status = "변화"
+
+                  browser.close()
+
+          except Exception:
+              print("예약 상태 판별 실패. 매진으로 처리하지 않습니다.")
+              if manual:
+                  notify("⚠️ 네이버 예약 화면 판별 실패. GitHub 실행 기록을 확인해 주세요.")
+              raise RuntimeError("네이버 화면을 읽지 못했거나 구조가 달라졌습니다.") from None
+
+          print(f"11월 7일 상태: {status}")
+
+          if status == "변화":
+              notify(
+                  "🔔 서도호 11/7: 매진 표시가 사라졌습니다.\n"
+                  "예약 가능 여부와 회차를 직접 확인하세요.\n" + URL
+              )
+          elif manual:
+              notify(
+                  "✅ 테스트 성공: 네이버 달력 확인 완료.\n"
+                  "현재 11/7은 매진입니다.\n" + URL
+              )
